@@ -1,0 +1,36 @@
+﻿# Build directories
+build/
+cmake-build-*/
+out/
+
+# Compiled binaries & objects
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+kvforge_cli
+
+# Runtime database files
+data/
+*.sst
+*.wal
+*.log
+*.tmp
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.env
