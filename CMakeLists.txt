@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.14)
-project(kvforge_lsm_engine VERSION 0.1.0 LANGUAGES CXX)
+project(kvforge_lsm_engine VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,7 +11,19 @@ else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-add_library(kvforge_headers INTERFACE)
-target_include_directories(kvforge_headers INTERFACE
+add_library(kvforge_core STATIC
+    src/crc32.cpp
+    src/wal.cpp
+    src/memtable.cpp
+    src/bloom_filter.cpp
+    src/sstable.cpp
+    src/compactor.cpp
+    src/db.cpp
+)
+
+target_include_directories(kvforge_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
+
+add_executable(kvforge_cli src/main.cpp)
+target_link_libraries(kvforge_cli PRIVATE kvforge_core)
