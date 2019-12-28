@@ -1,6 +1,7 @@
 ﻿#include "kvforge/wal.h"
 
 #include <cstring>
+#include <filesystem>
 #include <vector>
 
 #include "kvforge/crc32.h"
@@ -15,6 +16,7 @@ namespace kvforge {
 namespace {
 
 constexpr std::size_t kWalHeaderBytes = 13;  // 4(crc) + 1(op) + 4(klen) + 4(vlen)
+constexpr std::uint32_t kMaxRecordPayloadBytes = 64U * 1024U * 1024U;
 
 void EncodeFixed32(std::uint8_t* dst, std::uint32_t val) {
     dst[0] = static_cast<std::uint8_t>(val & 0xFFU);
@@ -130,21 +132,28 @@ Status WriteAheadLog::Reset() {
     return SyncFile();
 }
 
-Status WriteAheadLog::Replay(const ReplayCallback& callback, bool /*allow_truncated_tail*/) {
+Status WriteAheadLog::Replay(const ReplayCallback& callback, bool allow_truncated_tail) {
     std::FILE* reader = std::fopen(path_.c_str(), "rb");
     if (reader == nullptr) {
         return Status::Ok();
     }
 
+    std::uint64_t valid_offset = 0;
+    bool truncated_tail_detected = false;
     std::uint8_t header[kWalHeaderBytes];
+
     while (true) {
         const std::size_t n = std::fread(header, 1, kWalHeaderBytes, reader);
         if (n == 0) {
             break;
         }
         if (n < kWalHeaderBytes) {
+            if (allow_truncated_tail) {
+                truncated_tail_detected = true;
+                break;
+            }
             std::fclose(reader);
-            return Status::Corruption("Incomplete WAL record header");
+            return Status::Corruption("Incomplete WAL record header at tail");
         }
 
         const std::uint32_t stored_crc = DecodeFixed32(header);
@@ -158,16 +167,26 @@ Status WriteAheadLog::Replay(const ReplayCallback& callback, bool /*allow_trunca
             return Status::Corruption("Unknown WAL operation code");
         }
 
+        if (key_len > kMaxRecordPayloadBytes || val_len > kMaxRecordPayloadBytes) {
+            std::fclose(reader);
+            return Status::Corruption("WAL record length exceeds sanity bound");
+        }
+
         std::string key(key_len, '\0');
         std::string value(val_len, '\0');
 
-        if (key_len > 0 && std::fread(&key[0], 1, key_len, reader) != key_len) {
+        const std::size_t read_k = (key_len > 0) ? std::fread(&key[0], 1, key_len, reader) : 0;
+        const std::size_t read_v = (val_len > 0 && read_k == key_len)
+                                       ? std::fread(&value[0], 1, val_len, reader)
+                                       : 0;
+
+        if (read_k != key_len || read_v != val_len) {
+            if (allow_truncated_tail) {
+                truncated_tail_detected = true;
+                break;
+            }
             std::fclose(reader);
-            return Status::Corruption("Truncated WAL key payload");
-        }
-        if (val_len > 0 && std::fread(&value[0], 1, val_len, reader) != val_len) {
-            std::fclose(reader);
-            return Status::Corruption("Truncated WAL value payload");
+            return Status::Corruption("Truncated WAL payload at tail");
         }
 
         std::uint32_t computed_crc = Crc32::Update(0U, header + 4, 9);
@@ -183,10 +202,21 @@ Status WriteAheadLog::Replay(const ReplayCallback& callback, bool /*allow_trunca
             return Status::Corruption("WAL CRC32 checksum mismatch");
         }
 
+        valid_offset += kWalHeaderBytes + key_len + val_len;
         callback(WalRecord{static_cast<WalOpType>(op_byte), std::move(key), std::move(value)});
     }
 
     std::fclose(reader);
+
+    // Strip partially written tail bytes so subsequent appends stay frame-aligned
+    if (truncated_tail_detected) {
+        std::error_code ec;
+        std::filesystem::resize_file(path_, valid_offset, ec);
+        if (ec) {
+            return Status::IOError("Failed truncating partial WAL tail: " + ec.message());
+        }
+    }
+
     return Status::Ok();
 }
 
