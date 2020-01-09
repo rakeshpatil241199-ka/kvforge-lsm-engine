@@ -78,7 +78,6 @@ Status SSTableBuilder::Build(const std::string& path,
         current_offset += encoded.size();
     }
 
-    // Write sparse index section
     const std::uint64_t index_offset = current_offset;
     std::string index_buf;
     PutU32(index_buf, static_cast<std::uint32_t>(index_entries.size()));
@@ -90,7 +89,6 @@ Status SSTableBuilder::Build(const std::string& path,
     out.write(index_buf.data(), static_cast<std::streamsize>(index_buf.size()));
     current_offset += index_buf.size();
 
-    // Write bloom filter section
     const std::uint64_t bloom_offset = current_offset;
     const std::string serialized_bloom = bloom.Serialize();
     std::string bloom_header;
@@ -99,7 +97,6 @@ Status SSTableBuilder::Build(const std::string& path,
     out.write(serialized_bloom.data(), static_cast<std::streamsize>(serialized_bloom.size()));
     current_offset += bloom_header.size() + serialized_bloom.size();
 
-    // Write fixed 32-byte footer
     std::string footer_body;
     footer_body.reserve(20);
     PutU64(footer_body, index_offset);
@@ -167,7 +164,6 @@ Status SSTableReader::Open(const std::string& path,
     reader->entry_count_ = entry_count;
     reader->file_size_ = static_cast<std::uint64_t>(size);
 
-    // Load sparse index into memory
     in.seekg(static_cast<std::streamoff>(index_offset));
     std::uint8_t count_buf[4];
     in.read(reinterpret_cast<char*>(count_buf), 4);
@@ -190,7 +186,6 @@ Status SSTableReader::Open(const std::string& path,
         reader->sparse_index_.push_back(SparseIndexEntry{std::move(key), GetU64(off_buf)});
     }
 
-    // Load Bloom filter into memory
     in.seekg(static_cast<std::streamoff>(bloom_offset));
     std::uint8_t blen_buf[4];
     in.read(reinterpret_cast<char*>(blen_buf), 4);
@@ -212,32 +207,40 @@ Status SSTableReader::Open(const std::string& path,
     return Status::Ok();
 }
 
-Status SSTableReader::Get(const std::string& key, std::string* value, bool* is_tombstone) const {
-    if (entry_count_ == 0) {
+Status SSTableReader::Get(const std::string& key,
+                          std::string* value,
+                          bool* is_tombstone,
+                          bool* bloom_rejected) const {
+    if (bloom_rejected != nullptr) {
+        *bloom_rejected = false;
+    }
+    if (entry_count_ == 0 || sparse_index_.empty()) {
         return Status::NotFound();
     }
     if (!bloom_filter_.MightContain(key)) {
+        if (bloom_rejected != nullptr) {
+            *bloom_rejected = true;
+        }
         return Status::NotFound();
     }
 
-    // Locate starting block offset via sparse index scan
-    std::uint64_t scan_start = 0;
-    std::uint64_t scan_end = index_offset_;
-    for (std::size_t i = 0; i < sparse_index_.size(); ++i) {
-        if (sparse_index_[i].key <= key) {
-            scan_start = sparse_index_[i].offset;
-            if (i + 1 < sparse_index_.size()) {
-                scan_end = sparse_index_[i + 1].offset;
-            } else {
-                scan_end = index_offset_;
-            }
-        } else {
-            if (i == 0) {
-                return Status::NotFound();
-            }
-            break;
-        }
+    // O(log(N/interval)) binary search over sparse index for the largest key <= target
+    auto upper = std::upper_bound(
+        sparse_index_.begin(),
+        sparse_index_.end(),
+        key,
+        [](const std::string& target, const SparseIndexEntry& entry) {
+            return target < entry.key;
+        });
+
+    if (upper == sparse_index_.begin()) {
+        return Status::NotFound();
     }
+
+    const auto block_it = upper - 1;
+    const std::uint64_t scan_start = block_it->offset;
+    const std::uint64_t scan_end =
+        (upper != sparse_index_.end()) ? upper->offset : index_offset_;
 
     std::ifstream in(path_, std::ios::binary);
     if (!in.is_open()) {

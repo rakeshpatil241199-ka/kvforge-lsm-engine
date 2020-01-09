@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <shared_mutex>
@@ -23,6 +24,7 @@ struct DBStats {
     std::uint64_t total_puts = 0;
     std::uint64_t total_deletes = 0;
     std::uint64_t total_gets = 0;
+    std::uint64_t bloom_filter_skips = 0;
     std::uint64_t total_flushes = 0;
     std::uint64_t total_compactions = 0;
     std::uint64_t total_disk_bytes = 0;
@@ -58,11 +60,12 @@ private:
 
     std::unique_ptr<WriteAheadLog> wal_;
     MemTable memtable_;
-    std::vector<std::unique_ptr<SSTableReader>> l0_tables_;  // newest first
-    std::vector<std::unique_ptr<SSTableReader>> l1_tables_;  // newest first
+    std::vector<std::unique_ptr<SSTableReader>> l0_tables_;
+    std::vector<std::unique_ptr<SSTableReader>> l1_tables_;
     std::uint64_t next_seq_ = 1;
 
-    mutable std::uint64_t total_gets_ = 0;
+    mutable std::atomic<std::uint64_t> total_gets_{0};
+    mutable std::atomic<std::uint64_t> bloom_filter_skips_{0};
     std::uint64_t total_puts_ = 0;
     std::uint64_t total_deletes_ = 0;
     std::uint64_t total_flushes_ = 0;

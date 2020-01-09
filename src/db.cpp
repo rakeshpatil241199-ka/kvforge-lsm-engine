@@ -12,7 +12,6 @@ namespace kvforge {
 namespace {
 
 bool ParseTableFilename(const std::string& filename, std::uint64_t* seq, int* level) {
-    // Expected format: 000001_L0.sst
     if (filename.size() < 11 || filename.substr(filename.size() - 4) != ".sst") {
         return false;
     }
@@ -67,7 +66,6 @@ Status DB::Open(const std::string& db_dir, const Options& options, std::unique_p
 }
 
 Status DB::Recover() {
-    // 1. Discover and open existing SSTables
     std::uint64_t max_seq = 0;
     for (const auto& entry : fs::directory_iterator(db_dir_)) {
         if (!entry.is_regular_file()) continue;
@@ -97,7 +95,6 @@ Status DB::Recover() {
     std::sort(l1_tables_.begin(), l1_tables_.end(), newest_first);
     next_seq_ = max_seq + 1;
 
-    // 2. Replay Write-Ahead Log into MemTable
     const std::string wal_path = (fs::path(db_dir_) / "wal.log").string();
     wal_ = std::make_unique<WriteAheadLog>(wal_path, options_.sync_wal);
 
@@ -163,17 +160,19 @@ Status DB::Get(const std::string& key, std::string* value) const {
         return Status::InvalidArgument("Key cannot be empty");
     }
     std::shared_lock<std::shared_mutex> lock(mu_);
-    ++total_gets_;
+    total_gets_.fetch_add(1, std::memory_order_relaxed);
 
-    // 1. Check active MemTable
     bool is_tombstone = false;
     if (memtable_.Get(key, value, &is_tombstone)) {
         return is_tombstone ? Status::NotFound() : Status::Ok();
     }
 
-    // 2. Search L0 SSTables (newest first)
     for (const auto& sst : l0_tables_) {
-        Status s = sst->Get(key, value, &is_tombstone);
+        bool bloom_rejected = false;
+        Status s = sst->Get(key, value, &is_tombstone, &bloom_rejected);
+        if (bloom_rejected) {
+            bloom_filter_skips_.fetch_add(1, std::memory_order_relaxed);
+        }
         if (s.ok()) {
             return is_tombstone ? Status::NotFound() : Status::Ok();
         }
@@ -182,9 +181,12 @@ Status DB::Get(const std::string& key, std::string* value) const {
         }
     }
 
-    // 3. Search L1 SSTables (newest first)
     for (const auto& sst : l1_tables_) {
-        Status s = sst->Get(key, value, &is_tombstone);
+        bool bloom_rejected = false;
+        Status s = sst->Get(key, value, &is_tombstone, &bloom_rejected);
+        if (bloom_rejected) {
+            bloom_filter_skips_.fetch_add(1, std::memory_order_relaxed);
+        }
         if (s.ok()) {
             return is_tombstone ? Status::NotFound() : Status::Ok();
         }
@@ -300,7 +302,8 @@ DBStats DB::GetStats() const {
     st.l1_table_count = l1_tables_.size();
     st.total_puts = total_puts_;
     st.total_deletes = total_deletes_;
-    st.total_gets = total_gets_;
+    st.total_gets = total_gets_.load(std::memory_order_relaxed);
+    st.bloom_filter_skips = bloom_filter_skips_.load(std::memory_order_relaxed);
     st.total_flushes = total_flushes_;
     st.total_compactions = total_compactions_;
     for (const auto& t : l0_tables_) st.total_disk_bytes += t->file_size();

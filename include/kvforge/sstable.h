@@ -12,12 +12,6 @@
 
 namespace kvforge {
 
-// On-disk SSTable layout (little-endian):
-//   [Data Records]     : [uint8_t tombstone][uint32_t klen][uint32_t vlen][key][val] ...
-//   [Sparse Index]     : [uint32_t count] ([uint32_t klen][key][uint64_t data_offset]) ...
-//   [Bloom Filter]     : [uint32_t byte_len][serialized BloomFilter bytes]
-//   [Footer (32 bytes)]: [uint64_t index_offset][uint64_t bloom_offset]
-//                        [uint32_t entry_count][uint32_t footer_crc][uint64_t magic]
 class SSTableBuilder {
 public:
     static constexpr std::uint64_t kMagicNumber = 0x4B56464F52474531ULL;  // "KVFORGE1"
@@ -41,11 +35,13 @@ public:
                        int level,
                        std::unique_ptr<SSTableReader>* out);
 
-    // Searches for `key`. Returns Ok() if found (setting is_tombstone & value),
-    // NotFound() if absent, or IOError/Corruption on disk failures.
-    Status Get(const std::string& key, std::string* value, bool* is_tombstone) const;
+    // Searches for `key`. Optionally reports whether the lookup was short-circuited
+    // by the in-memory Bloom filter without touching disk.
+    Status Get(const std::string& key,
+               std::string* value,
+               bool* is_tombstone,
+               bool* bloom_rejected = nullptr) const;
 
-    // Streams all sorted entries in the SSTable (used during compaction).
     Status ReadAll(std::vector<KeyValueRecord>* out) const;
 
     const std::string& path() const { return path_; }

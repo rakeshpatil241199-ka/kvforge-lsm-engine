@@ -1,5 +1,4 @@
-﻿#include <chrono>
-#include <cstdlib>
+﻿#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -10,7 +9,7 @@ namespace {
 
 void PrintUsage() {
     std::cout << "KVForge LSM Engine CLI\n"
-              << "Usage: kvforge_cli [--db <dir>] [--memtable-kb <kb>] [--no-sync]\n"
+              << "Usage: kvforge_cli [--db <dir>] [--memtable-kb <kb>] [--bloom-bpk <bits>] [--l0-trigger <n>] [--no-sync]\n"
               << "Commands (stdin):\n"
               << "  PUT <key> <value>\n"
               << "  GET <key>\n"
@@ -104,6 +103,7 @@ int main(int argc, char** argv) {
                       << " puts=" << st.total_puts
                       << " dels=" << st.total_deletes
                       << " gets=" << st.total_gets
+                      << " bloom_skips=" << st.bloom_filter_skips
                       << " flushes=" << st.total_flushes
                       << " compactions=" << st.total_compactions
                       << " disk_bytes=" << st.total_disk_bytes << "\n";
