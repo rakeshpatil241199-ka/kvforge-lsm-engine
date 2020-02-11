@@ -1,0 +1,32 @@
+﻿version: "3.8"
+
+services:
+  kvforge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kvforge-engine
+    stdin_open: true
+    tty: true
+    volumes:
+      - kvforge_data:/data/kvforge
+    command: ["--db", "/data/kvforge", "--memtable-kb", "2048"]
+
+  benchmark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kvforge-benchmark
+    entrypoint: ["python3", "/app/tools/benchmark.py"]
+    command:
+      - "--bin"
+      - "/usr/local/bin/kvforge_cli"
+      - "--ops"
+      - "5000"
+      - "--key-space"
+      - "2000"
+      - "--memtable-kb"
+      - "64"
+
+volumes:
+  kvforge_data:
